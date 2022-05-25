@@ -1,0 +1,4 @@
+python submit_light_profile_lina_mocks_auto.py 20
+python submit_light_profile_lina_mocks_auto.py 100
+python submit_light_profile_lina_mocks_auto.py 1000
+python submit_light_profile_lina_mocks_auto.py 10000
