@@ -65,8 +65,8 @@ fix_light_profile = False
 load_light_profile = True
 
 ##############################################################################
-# This block of code figures out which temporary index to start at 
-# (to ensure that existing temporary directories don't get overwritten into) 
+# This block of code figures out which temporary index to start at
+# (to ensure that existing temporary directories don't get overwritten into)
 
 dirs = os.listdir('/tigress/lnecib/dSph_likelihoods/RunFiles/temp/')
 temp_ind_base = 0
@@ -98,7 +98,7 @@ extratext = "Tucana"
 
 for data_tag in ["tuc","tuc_old_measurement"]:
 	for nu_model, lp_tag in nu_model_list:
-		for dm_model in dm_model_list:		
+		for dm_model in dm_model_list:
 			for nbeta in nbeta_list:
 
 				data_file_path = data_dir_base+data_tag+".npz"
@@ -106,11 +106,11 @@ for data_tag in ["tuc","tuc_old_measurement"]:
 				light_profile_params_path = data_dir_base+"/light_profile_bestfits/"+data_tag+lp_tag+".npz"
 
 				beta_tag = '_nbeta_' + str(nbeta)
-				run_tag = run_tag_initial + beta_tag 
+				run_tag = run_tag_initial + beta_tag
 
 				chains_dir = chains_dir_base+"/"+extratext+"/"+data_tag+"_"+nu_model+"_"+dm_model+run_tag
 				sigmap_path = data_dir_base+"/sigmap_bestfits/"+data_tag+run_tag
-				
+
 				plots_dir = plots_dir_base+extratext+"/"+data_tag+"/"
 				post_dir = post_dir_base+extratext+"/"+data_tag+"/"
 
@@ -121,7 +121,7 @@ for data_tag in ["tuc","tuc_old_measurement"]:
 					os.makedirs(plots_dir)
 
 				if not os.path.exists(post_dir):
-					os.makedirs(post_dir)				
+					os.makedirs(post_dir)
 
 				batch2 = "chains_dir="+chains_dir+"\n"+"data_file_path="+data_file_path+"\n"+"light_profile_params_path="+light_profile_params_path+"\n"+"sigmap_path="+sigmap_path+"\n"\
 						+"load_light_profile="+str(load_light_profile)+"\n"+"fix_light_profile="+str(fix_light_profile)+"\n"+"nu_model="+nu_model+"\n"\
