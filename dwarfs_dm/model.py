@@ -1,6 +1,10 @@
 
+import h5py
+import pickle
 import dynesty
 import numpy as np
+
+
 
 class Model():
     ''' Partent class to fit a model with log likelihood using Nested Sampling '''
@@ -26,24 +30,22 @@ class Model():
             u[i] = (u_max - u_min) * u[i] + u_min
         return u
 
-    def sample(self, *args, **kargs):
+    def sample(self, outfile=None, *args, **kargs):
         ''' Nested sampling with dynesty '''
-        sampler = dynesty.NestedSampler(
+        sampler = dynesty.DynamicNestedSampler(
             self.log_likelihood, self.priors_fn, self.n_params,
             *args, **kargs)
         sampler.run_nested()
         self.results = sampler.results
         self.weights = np.exp(self.results.logwt - self.results.logz[-1])
-        #self._write_results(outfile)
+        self.write_results(outfile)
 
     def get_median(self, key=None):
         ''' Get the best parameters '''
-
         if key is not None:
             index = self.params_list.index(key)
             return dynesty.utils.quantile(
                 self.results.samples[:, index], [0.5, ], weights=self.weights)[0]
-
         median = {}
         for i, params in enumerate(self.params_list):
             median[params] = dynesty.utils.quantile(
@@ -51,9 +53,11 @@ class Model():
         return median
 
 
-    #def _write_results(self, outfile):
-    #    if outfile is not None:
-    #        with open(outfile, 'wb') as f:
-    #            pickle.dump(self.results, f)
-
+    def write_results(self, outfile):
+        if outfile is not None:
+            with open(outfile, 'wb') as f:
+                pickle.dump({
+                    'results': self.results,
+                    'weights': self.weights
+                }, f, protocol=pickle.HIGHEST_PROTOCOL)
 
