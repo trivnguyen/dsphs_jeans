@@ -1,8 +1,7 @@
 
 import numpy as np
 import scipy.stats
-
-from .model import Model
+import bilby
 
 def poiss_err(n, alpha=0.32):
     """
@@ -18,7 +17,7 @@ def poiss_err(n, alpha=0.32):
     return sigma_lo, sigma_up
 
 
-def log10_plummer2d(R, params):
+def log10_plummer2d(R, L, r_star):
     """ Log 10 of the Plummer 2D profile
     Args:
         R: projected radius
@@ -26,12 +25,12 @@ def log10_plummer2d(R, params):
     Returns:
         log I(R) = log {L(1 + R^2 / a^2)^{-2} / (pi * r_star^2)}
     """
-    logL, logr_star = params
-    r_star = 10**logr_star
+    logL = np.log10(L)
+    logr_star = np.log10(r_star)
     return logL - 2 * logr_star - 2 * np.log10(1 + R**2 / r_star**2) - np.log10(np.pi)
 
 
-def log10_plummer3d(r, params):
+def log10_plummer3d(r, L, r_star):
     """ Log 10 of the Plummer 2D profile
     Args:
         R: projected radius
@@ -39,8 +38,8 @@ def log10_plummer3d(r, params):
     Returns:
         log I(R) = log {L(1 + R^2 / a^2)^{-2} / (pi * r_star^2)}
     """
-    logL, logr_star = params
-    r_star = 10**logr_star
+    logL = np.log10(L)
+    logr_star = np.log10(r_star)
     return logL - 3 * logr_star - (5/2) * np.log10(1 + r**2 / r_star**2) - np.log10(4 * np.pi / 3)
 
 
@@ -84,7 +83,7 @@ def calc_Sigma(R):
     return Sigma_data, Sigma_data_lo, Sigma_data_hi, R_bins_ce
 
 
-class PlummerModel(Model):
+class PlummerModel(bilby.Likelihood):
     ''' Class to fit the Plummer model to the light profile data '''
     def __init__(self, R, priors={}):
         '''
@@ -92,13 +91,16 @@ class PlummerModel(Model):
         - R: (array of N floats) the projected radii of N stars
         - priors: (dict) dictionary with prior range
         '''
-        super().__init__(params_list=('logL', 'logr_star'))
+        super().__init__(parameters={"L": None, "r_star": None})
 
         self.R = R
         self.Sigma, self.Sigma_lo, self.Sigma_hi, self.Rbins_ce = calc_Sigma(R)
 
         # set up priors
-        self.priors = {'logL': [-2, 5], 'logr_star': [-3, 3]}
+        self.priors = {
+            "L": bilby.core.prior.LogUniform(1e-2, 1e5, "L"),
+            "r_star": bilby.core.prior.LogUniform(1e-3, 1e3, "r_star")
+        }
         self.priors.update(priors)
 
         # calculate the low and high error
@@ -107,7 +109,7 @@ class PlummerModel(Model):
         self.V1 = self.sig_lo * self.sig_hi
         self.V2 = self.sig_hi - self.sig_lo
 
-    def log_likelihood(self, x):
+    def log_likelihood(self):
         ''' Log likelihood function defined as:
         ```
             logL = -0.5 * (Sigma - Sigma_hat)^2 / (V1 - V2 * (Sigma - Sigma_hat))
@@ -117,7 +119,9 @@ class PlummerModel(Model):
         - Sigma_hat is the estimated light profile
         - V1 and V2
         '''
-        Sigma_hat = 10**log10_plummer2d(self.Rbins_ce, x)
+        L = self.parameters["L"]
+        r_star = self.parameters["r_star"]
+        Sigma_hat = 10**log10_plummer2d(self.Rbins_ce, L, r_star)
         delta_Sigma = self.Sigma - Sigma_hat
         return - 0.5 * np.sum(delta_Sigma**2 / (self.V1 - self.V2 * delta_Sigma))
 

@@ -3,19 +3,16 @@ import numpy as np
 import scipy.integrate
 import astropy.units as u
 import astropy.constants as const
-
+import bilby
 from . import light_profiles
-from .model import Model
 
 
 G = const.G.to_value(u.kpc**3 / u.Msun / u.s**2)
 kpc_to_km = (u.kpc).to(u.km)
 
 # DM models
-def gNFW(r, logr_dm, gamma, logrho_0):
+def gNFW(r, r_dm, gamma, rho_0):
     ''' Generalized NFW profile '''
-    rho_0 = 10**logrho_0
-    r_dm = 10**logr_dm
     return rho_0 * (r/r_dm)**(-gamma) * (1  + r/r_dm)**(-3 + gamma)
 
 
@@ -49,7 +46,7 @@ def calc_g(r, beta):
     return g
 
 
-def calc_sigma2_nu(r, nu, dm_params, g=1):
+def calc_sigma2_nu(r, nu, r_dm, gamma, rho_0, g=1):
     ''' Calculate the 3D Jeans integration:
     ```
     sigma2(r0) nu(r0) g(r_0) =  int_r0^\infty G M(r) nu(r) g(r) / r^2 dr
@@ -69,7 +66,7 @@ def calc_sigma2_nu(r, nu, dm_params, g=1):
     Returns:
     - sigma2: (arrays of M floats) the 3D velocity dispersion in (km/s)^2
     '''
-    rho = gNFW(r, *dm_params)
+    rho = gNFW(r, r_dm, gamma, rho_0)
     M = cumulative_mass(r, rho)
     dr = r[1] - r[0]
 
@@ -118,10 +115,10 @@ def calc_sigma2p_Sigma(R, r, sigma2_nu, beta=None):
     return sigma2p_Sigma
 
 
-class JeansModel(Model):
+class JeansModel(bilby.Likelihood):
     ''' Class for fitting DM density distribution with Jeans modeling '''
     def __init__(
-        self, R, v, logL, logr_star, r_a=1e30, priors={},
+        self, R, v, r_a=1e30, priors={},
         dr=0.001, v_err=0.0, r_min_factor=0.5, r_max_factor=2):
         '''
         Parameters:
@@ -135,12 +132,12 @@ class JeansModel(Model):
         - r_min_factor: (float) factor to convert the min projected radius R to the min 3D radius
         - r_max_factor: (float) factor to convert the max projected radius R to the max 3D radius
         '''
-        super().__init__(params_list=('logr_dm', 'gamma', 'logrho_0'))
+        super().__init__(parameters={
+            "r_dm": None, "gamma": None, "rho_0": None, "L": None, "r_star": None})
 
         self.R = R
         self.v = v
         self.v_err = v_err
-        self.star_params = (logL, logr_star)
         self.r_a = r_a
         self.dr = dr
         self.priors = priors
@@ -151,9 +148,11 @@ class JeansModel(Model):
         self.r = np.arange(self.r_min, self.r_max + dr, dr)
 
         self.priors = {
-            'logr_dm': [-1, 0.7],
-            'gamma': [-1, 5],
-            'logrho_0': [5, 8],
+            "r_dm": bilby.core.prior.LogUniform(1e-3, 1e3, "r_dm"),
+            "gamma": bilby.core.prior.Uniform(-1, 5, "gamma"),
+            "rho_0": bilby.core.prior.LogUniform(1e3, 1e10, "rho_0"),
+            "L": bilby.core.prior.LogUniform(1e-2, 1e5, "L"),
+            "r_star": bilby.core.prior.LogUniform(1e-3, 1e3, "r_star")
         }
         self.priors.update(priors)
 
@@ -161,15 +160,11 @@ class JeansModel(Model):
         self.beta = beta(self.r, r_a)
         self.g = calc_g(self.r, self.beta)
 
-        # calculate the 3D and 2D light profile
-        self.nu = 10**light_profiles.log10_plummer3d(self.r, self.star_params)
-        self.Sigma = 10**light_profiles.log10_plummer2d(self.R, self.star_params)
-
         # calculate the squared measurement error and velocity square error
         self.v_var = v_err**2
         self.v_square_err = (v - np.mean(v))**2
 
-    def log_likelihood(self, x):
+    def log_likelihood(self):
         ''' The log likelihood given a set of DM parameters.
         For each star the log likelihood is defined as:
         ```
@@ -189,10 +184,20 @@ class JeansModel(Model):
         - The log likelihood
 
         '''
+        r_dm = self.parameters['r_dm']
+        gamma = self.parameters['gamma']
+        rho_0 = self.parameters['rho_0']
+        L = self.parameters['L']
+        r_star = self.parameters['r_star']
+
+        # calculate the 3D and 2D light profile
+        nu = 10**light_profiles.log10_plummer3d(self.r, L, r_star)
+        Sigma = 10**light_profiles.log10_plummer2d(self.R, L, r_star)
+
         # calculate the projected 2d velocity dispersion
-        sigma2_nu = calc_sigma2_nu(self.r, self.nu, x, self.g)
+        sigma2_nu = calc_sigma2_nu(self.r, nu, r_dm, gamma, rho_0, self.g)
         sigma2p_Sigma = calc_sigma2p_Sigma(self.R, self.r, sigma2_nu, self.beta)
-        sigma2p = sigma2p_Sigma / self.Sigma * kpc_to_km**2
+        sigma2p = sigma2p_Sigma / Sigma * kpc_to_km**2
 
         # calculate the log likelihood
         var = sigma2p + self.v_var
