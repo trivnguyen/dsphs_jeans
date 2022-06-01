@@ -6,6 +6,7 @@ import sys
 import argparse
 import logging
 import warnings
+import shutil
 
 import dynesty
 import numpy as np
@@ -40,7 +41,8 @@ def parse_cmd():
         '-o', '--outdir',
         required=True, help='Path to output directory')
     parser.add_argument(
-        '--resume', action='store_true', required=False, help='Enable to resume last run')
+        '--overwrite', action='store_true', required=False,
+        help='Enable to overwrite previous run')
 
     # likelihood args
     parser.add_argument(
@@ -56,10 +58,17 @@ def parse_cmd():
         '--r-max-factor', required=False, type=float, default=2,
         help='factor to convert R_max to r_max')
     parser.add_argument(
-        '--r-a', required=False, type=float, default=1e30,
+        '--ra', required=False, type=float, default=1e30,
         help='Velocity anisotropy scale radius')
 
     # prior args
+    parser.add_argument(
+        '--lp-prior-type', required=False, default='ci', type=str.lower,
+        choices=('uni', 'normal', 'ci', 'best_mean', 'best_median'),
+        help='Prior type of the light profile for Jeans modeling')
+    parser.add_argument(
+        '--fit-v-mean', required=False, action='store_true',
+        help='Enable to fit v mean')
     parser.add_argument(
         '--log-rdm', required=False, type=float, nargs=2, default=(-1, 0.7),
         help='Log scale radius of  DM')
@@ -78,6 +87,10 @@ if __name__ == '__main__':
     FLAGS = parse_cmd()
     logger = set_logger()
 
+    if (FLAGS.overwrite) and os.path.exists(FLAGS.outdir):
+        logger.info('Overwrite existing directory')
+        shutil.rmtree(FLAGS.outdir)
+
     # create output directory
     logger.info(f'writing output to {FLAGS.outdir}')
     os.makedirs(FLAGS.outdir, exist_ok=True)
@@ -90,42 +103,47 @@ if __name__ == '__main__':
     # fit light profile with the Plummer model
     logger.info(f'fit light profile using Plummer 2D model')
     plummer_model = light_profiles.PlummerModel(R)
-    plummer_result = bilby.run_sampler(
-        likelihood=plummer_model, priors=plummer_model.priors,
+    plummer_model.run_sampler(
         sampler="dynesty", nlive=1000, sample='auto',
-        label="plummer", outdir=FLAGS.outdir, resume=FLAGS.resume,
+        label="plummer", outdir=FLAGS.outdir, resume=(not FLAGS.overwrite),
     )
 
-    #weights = np.exp(plummer_result.logwt - plummer_result.logz[-1])
-    L = np.mean(plummer_result.posterior['L'].values)
-    L_sig = np.std(plummer_result.posterior['L'].values)
-    r_star = np.mean(plummer_result.posterior['r_star'].values)
-    r_star_sig = np.std(plummer_result.posterior['r_star'].values)
-    logger.info(f'Best fit: L {L}; r_star {r_star}')
+    # use fit to determine Jeans modeling prior
+    lp_priors = {}
+    for key in plummer_model.parameters:
+        if FLAGS.lp_prior_type == 'ci':
+            val_lo, val_hi = plummer_model.get_credible_intervals(key, p=0.95)
+            lp_priors[key] = bilby.core.prior.Uniform(val_lo, val_hi, key)
+        elif FLAGS.lp_prior_type == 'normal':
+            mean, std = plummer_model.get_mean_and_std(key)
+            lp_priors[key] = bilby.core.prior.Gaussian(mean, std, key)
+        elif FLAGS.lp_prior_type == 'best_median':
+            median = plummer_model.get_median(key)
+            lp_priors[key] = bilby.core.prior.DeltaFunction(median, key)
+        elif FLAGS.lp_prior_type == 'best_mean':
+            mean, std = plummer_model.get_mean_and_std(key)
+            lp_priors[key] = bilby.core.prior.DeltaFunction(mean, key)
+        elif FLAGS.lp_prior_type == 'uni':
+            pass
 
     # fit DM model
     logger.info('fit DM profiles using gNFW model')
-    jeans_priors = {
-        "L": bilby.core.prior.Gaussian(L, L_sig, "L"),
-        "r_star": bilby.core.prior.Gaussian(r_star, r_star_sig, "r_star"),
-    }
     jeans_model = dm_profiles.JeansModel(
-        R, v, priors=jeans_priors, dr=FLAGS.r_step, v_err=FLAGS.v_error,
+        R, v, priors=lp_priors, dr=FLAGS.r_step, v_err=FLAGS.v_error,
         r_min_factor=FLAGS.r_min_factor, r_max_factor=FLAGS.r_max_factor,
-        r_a=FLAGS.r_a
+        r_a=FLAGS.ra, fit_v_mean=FLAGS.fit_v_mean
     )
-
-    jeans_result = bilby.run_sampler(
-        likelihood=jeans_model, priors=jeans_model.priors,
+    jeans_model.run_sampler(
         sampler="dynesty", nlive=1000, sample='auto',
-        label="jeans", outdir=FLAGS.outdir, resume=FLAGS.resume
+        label="jeans", outdir=FLAGS.outdir, resume=(not FLAGS.overwrite)
     )
 
+    # print out a summary statement
+    logger.info('Summary')
     for key in jeans_model.parameters:
-        quantiles = np.percentile(
-            jeans_result.posterior[key].values, [16, 50, 84])
-        med = quantiles[1]
-        lo = med - quantiles[0]
-        hi = quantiles[2] - med
+        med = jeans_model.get_median(key)
+        lo, hi = jeans_model.get_credible_intervals(key, p=0.68)
+        lo = med - lo
+        hi = hi - med
         logger.info(f'{key}: {med} + {hi} - {lo}')
 

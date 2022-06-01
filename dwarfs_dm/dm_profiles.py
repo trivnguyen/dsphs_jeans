@@ -4,8 +4,9 @@ import scipy.integrate
 import astropy.units as u
 import astropy.constants as const
 import bilby
-from . import light_profiles
 
+from . import model
+from . import light_profiles
 
 G = const.G.to_value(u.kpc**3 / u.Msun / u.s**2)
 kpc_to_km = (u.kpc).to(u.km)
@@ -79,10 +80,10 @@ def calc_sigma2_nu(r, nu, r_dm, gamma, rho_0, g=1):
     return sigma2_nu
 
 
-def calc_sigma2p_Sigma(R, r, sigma2_nu, beta=None):
+def calc_sigma2p_Sigma(R, r, sigma2_nu, beta):
     ''' Calculate the projected Jeans integration:
     ```
-    sigma2_p(R) Sigma(R) = 2 * int_R^\intfy (nu(r) sigma2(r) r) / sqrt(r^2 - R^2) dr
+    sigma2_p(R) Sigma(R) = 2 * int_R^\intfy (1 - beta * R^2 /r^2) (nu(r) sigma2(r) r) / sqrt(r^2 - R^2) dr
     ```
     where:
     - R is the projected radius
@@ -97,29 +98,25 @@ def calc_sigma2p_Sigma(R, r, sigma2_nu, beta=None):
 
     '''
     dr = r[1] - r[0]
+    R = R[:, None]
+    r = r[None, :]
+    sigma2_nu = sigma2_nu[None, :]
+    rminR2 = r**2 - R**2
+    beta = beta[None, :]
 
-    if beta is not None:
-        R = R[:, None]
-        r = r[None, :]
-        sigma2_nu = sigma2_nu[None, :]
-        beta = beta[None, :]
-        rminR2 = r**2 - R**2
+    with np.errstate(divide='ignore', invalid='ignore'):
         inte = (1 - beta * R**2 / r**2) * sigma2_nu * r
         inte = np.where(rminR2 > 0,  inte / np.sqrt(rminR2), 0)
-    else:
-        rminR2 = r[None, :]**2 - R[:, None]**2
-        inte = (sigma2_nu * r)
-        inte = np.where(rminR2 > 0, inte[None, :] / np.sqrt(rminR2), 0)
 
     sigma2p_Sigma = 2 * scipy.integrate.trapezoid(inte, axis=1, dx=dr)
     return sigma2p_Sigma
 
 
-class JeansModel(bilby.Likelihood):
+class JeansModel(model.Model):
     ''' Class for fitting DM density distribution with Jeans modeling '''
     def __init__(
-        self, R, v, r_a=1e30, priors={},
-        dr=0.001, v_err=0.0, r_min_factor=0.5, r_max_factor=2):
+        self, R, v, r_a=1e30, priors={}, dr=0.001, v_err=0.0,
+        r_min_factor=0.5, r_max_factor=2, fit_v_mean=False):
         '''
         Parameters:
         - R: (array of N float) the prosjected radii of N stars in kpc
@@ -133,11 +130,13 @@ class JeansModel(bilby.Likelihood):
         - r_max_factor: (float) factor to convert the max projected radius R to the max 3D radius
         '''
         super().__init__(parameters={
-            "r_dm": None, "gamma": None, "rho_0": None, "L": None, "r_star": None})
+            "r_dm": None, "gamma": None, "rho_0": None,
+            "L": None, "r_star": None, "v_mean": None})
 
         self.R = R
         self.v = v
         self.v_err = v_err
+        self.v_var = v_err**2
         self.r_a = r_a
         self.dr = dr
         self.priors = priors
@@ -152,17 +151,17 @@ class JeansModel(bilby.Likelihood):
             "gamma": bilby.core.prior.Uniform(-1, 5, "gamma"),
             "rho_0": bilby.core.prior.LogUniform(1e3, 1e10, "rho_0"),
             "L": bilby.core.prior.LogUniform(1e-2, 1e5, "L"),
-            "r_star": bilby.core.prior.LogUniform(1e-3, 1e3, "r_star")
+            "r_star": bilby.core.prior.LogUniform(1e-3, 1e3, "r_star"),
+            "v_mean": bilby.core.prior.Uniform(-100, 100, "v_mean")
         }
+        if not fit_v_mean:
+            self.priors["v_mean"] = bilby.core.prior.DeltaFunction(np.mean(v), "v_mean")
         self.priors.update(priors)
 
         # calculate the velocity anistropy parameter
         self.beta = beta(self.r, r_a)
         self.g = calc_g(self.r, self.beta)
 
-        # calculate the squared measurement error and velocity square error
-        self.v_var = v_err**2
-        self.v_square_err = (v - np.mean(v))**2
 
     def log_likelihood(self):
         ''' The log likelihood given a set of DM parameters.
@@ -189,6 +188,7 @@ class JeansModel(bilby.Likelihood):
         rho_0 = self.parameters['rho_0']
         L = self.parameters['L']
         r_star = self.parameters['r_star']
+        v_mean = self.parameters['v_mean']
 
         # calculate the 3D and 2D light profile
         nu = 10**light_profiles.log10_plummer3d(self.r, L, r_star)
@@ -201,7 +201,7 @@ class JeansModel(bilby.Likelihood):
 
         # calculate the log likelihood
         var = sigma2p + self.v_var
-        logL = -0.5 * self.v_square_err / var
+        logL = -0.5 * (self.v - v_mean)**2 / var
         logL = logL - 0.5 * np.log(2 * np.pi * var)
         logL = np.sum(logL)
 

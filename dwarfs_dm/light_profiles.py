@@ -3,6 +3,8 @@ import numpy as np
 import scipy.stats
 import bilby
 
+from . import model
+
 def poiss_err(n, alpha=0.32):
     """
     Poisson error (variance) for n counts.
@@ -83,7 +85,7 @@ def calc_Sigma(R):
     return Sigma_data, Sigma_data_lo, Sigma_data_hi, R_bins_ce
 
 
-class PlummerModel(bilby.Likelihood):
+class PlummerModel(model.Model):
     ''' Class to fit the Plummer model to the light profile data '''
     def __init__(self, R, priors={}):
         '''
@@ -124,4 +126,5 @@ class PlummerModel(bilby.Likelihood):
         Sigma_hat = 10**log10_plummer2d(self.Rbins_ce, L, r_star)
         delta_Sigma = self.Sigma - Sigma_hat
         return - 0.5 * np.sum(delta_Sigma**2 / (self.V1 - self.V2 * delta_Sigma))
+
 
