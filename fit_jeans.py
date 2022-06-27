@@ -49,7 +49,7 @@ def parse_cmd():
         '--r-step', required=False, type=float, default=0.001,
         help='Step size of the integration radius in kpc')
     parser.add_argument(
-        '--v-error', required=False, type=float, default=2,
+        '--v-error', required=False, type=float, default=0,
         help='Velocity measurement error')
     parser.add_argument(
         '--r-min-factor', required=False, type=float, default=2,
@@ -58,7 +58,7 @@ def parse_cmd():
         '--r-max-factor', required=False, type=float, default=2,
         help='factor to convert R_max to r_max')
     parser.add_argument(
-        '--ra', required=False, type=float, default=1e30,
+        '--ra', required=False, type=float,
         help='Velocity anisotropy scale radius')
 
     # prior args
@@ -70,14 +70,13 @@ def parse_cmd():
         '--fit-v-mean', required=False, action='store_true',
         help='Enable to fit v mean')
     parser.add_argument(
-        '--log-rdm', required=False, type=float, nargs=2, default=(-1, 0.7),
-        help='Log scale radius of  DM')
+        '--dm-prior-file', required=False, type=str,
+        help='Path to DM prior file')
+
+    # sampler args
     parser.add_argument(
-        '--gamma', required=False, type=float, nargs=2, default=(-1, 5),
-        help='Inner slope')
-    parser.add_argument(
-        '--log-rho', required=False, type=float, nargs=2, default=(5, 8),
-        help='Central density')
+        '--npoints', required=False, default=100, type=int,
+        help="Number of live points for dynesty")
 
     return parser.parse_args()
 
@@ -97,16 +96,22 @@ if __name__ == '__main__':
 
     # read in projected coordinates
     logger.info(f'read coordinates from {FLAGS.input}')
-    X, Y, _, _, _, v = np.genfromtxt(FLAGS.input, unpack=True)
+    try:
+        X, Y, _, _, _, v = np.genfromtxt(FLAGS.input, unpack=True)
+    except:
+        X, Y, v = np.genfromtxt(FLAGS.input, unpack=True)
     R = np.sqrt(X**2 + Y**2)
 
     # fit light profile with the Plummer model
     logger.info(f'fit light profile using Plummer 2D model')
     plummer_model = light_profiles.PlummerModel(R)
     plummer_model.run_sampler(
-        sampler="dynesty", nlive=1000, sample='auto',
+        sampler="dynesty", npoints=FLAGS.npoints, sample='auto',
         label="plummer", outdir=FLAGS.outdir, resume=(not FLAGS.overwrite),
     )
+
+    # Define Jeans prior
+    priors = {}
 
     # use fit to determine Jeans modeling prior
     lp_priors = {}
@@ -125,16 +130,26 @@ if __name__ == '__main__':
             lp_priors[key] = bilby.core.prior.DeltaFunction(mean, key)
         elif FLAGS.lp_prior_type == 'uni':
             pass
+    priors.update(lp_priors)
+
+    # read in DM prior file if given
+    if FLAGS.dm_prior_file is not None:
+        dm_priors = bilby.core.prior.PriorDict(filename=FLAGS.dm_prior_file)
+        priors.update(dm_priors)
+
+    # anisotropy prior
+    if FLAGS.ra is not None:
+        priors['r_a'] = bilby.core.prior.DeltaFunction(FLAGS.ra, "r_a")
 
     # fit DM model
     logger.info('fit DM profiles using gNFW model')
     jeans_model = dm_profiles.JeansModel(
-        R, v, priors=lp_priors, dr=FLAGS.r_step, v_err=FLAGS.v_error,
+        R, v, priors=priors, dr=FLAGS.r_step, v_err=FLAGS.v_error,
         r_min_factor=FLAGS.r_min_factor, r_max_factor=FLAGS.r_max_factor,
-        r_a=FLAGS.ra, fit_v_mean=FLAGS.fit_v_mean
+        fit_v_mean=FLAGS.fit_v_mean
     )
     jeans_model.run_sampler(
-        sampler="dynesty", nlive=1000, sample='auto',
+        sampler="dynesty", npoints=FLAGS.npoints, sample='auto',
         label="jeans", outdir=FLAGS.outdir, resume=(not FLAGS.overwrite)
     )
 

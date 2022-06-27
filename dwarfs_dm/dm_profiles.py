@@ -4,6 +4,9 @@ import scipy.integrate
 import astropy.units as u
 import astropy.constants as const
 import bilby
+import logging
+
+logger = logging.getLogger(__name__)
 
 from . import model
 from . import light_profiles
@@ -26,7 +29,7 @@ def cumulative_mass(r, rho, axis=0):
     return M
 
 
-def beta(r, r_a):
+def calc_beta(r, r_a):
     ''' Compute the anisotropy velocity profile '''
     return r**2 / (r_a**2 + r**2)
 
@@ -115,7 +118,7 @@ def calc_sigma2p_Sigma(R, r, sigma2_nu, beta):
 class JeansModel(model.Model):
     ''' Class for fitting DM density distribution with Jeans modeling '''
     def __init__(
-        self, R, v, r_a=1e30, priors={}, dr=0.001, v_err=0.0,
+        self, R, v, priors={}, dr=0.001, v_err=0.0,
         r_min_factor=0.5, r_max_factor=2, fit_v_mean=False):
         '''
         Parameters:
@@ -137,7 +140,6 @@ class JeansModel(model.Model):
         self.v = v
         self.v_err = v_err
         self.v_var = v_err**2
-        self.r_a = r_a
         self.dr = dr
         self.priors = priors
         self.r_min_factor = r_min_factor
@@ -147,21 +149,59 @@ class JeansModel(model.Model):
         self.r = np.arange(self.r_min, self.r_max + dr, dr)
 
         self.priors = {
-            "r_dm": bilby.core.prior.LogUniform(1e-3, 1e3, "r_dm"),
-            "gamma": bilby.core.prior.Uniform(-1, 5, "gamma"),
-            "rho_0": bilby.core.prior.LogUniform(1e3, 1e10, "rho_0"),
+            "r_dm": bilby.core.prior.LogUniform(0.1, 5, "r_dm"),
+            "gamma": bilby.core.prior.Uniform(-1, 2, "gamma"),
+            "rho_0": bilby.core.prior.LogUniform(1e5, 1e8, "rho_0"),
             "L": bilby.core.prior.LogUniform(1e-2, 1e5, "L"),
             "r_star": bilby.core.prior.LogUniform(1e-3, 1e3, "r_star"),
-            "v_mean": bilby.core.prior.Uniform(-100, 100, "v_mean")
+            "v_mean": bilby.core.prior.Uniform(-100, 100, "v_mean"),
+            "r_a_fact": bilby.core.prior.Uniform(0.5, 2, "r_a_fact")
         }
         if not fit_v_mean:
             self.priors["v_mean"] = bilby.core.prior.DeltaFunction(np.mean(v), "v_mean")
         self.priors.update(priors)
+        if self.priors.get("r_a") is not None:
+            self.priors.pop("r_a_fact")
 
-        # calculate the velocity anistropy parameter
-        self.beta = beta(self.r, r_a)
-        self.g = calc_g(self.r, self.beta)
+        self.__preset_vars()
 
+    def __preset_vars(self):
+        ''' Preset some quantities: nu, Sigma, v_rms
+        if their priors are fixed to speed up calculation
+        '''
+        self.nu = None
+        self.Sigma = None
+        self.v_rms = None
+        self.beta = None
+        self.g = None
+
+        # calculate the 3D and 2D light profile
+        is_r_star_delta = isinstance(
+            self.priors['r_star'], (float, bilby.core.prior.DeltaFunction))
+        is_L_delta = isinstance(
+            self.priors['L'], (float, bilby.core.prior.DeltaFunction))
+        if is_r_star_delta and is_L_delta:
+            logger.info('Preset nu and Sigma')
+            r_star = self.priors['r_star'].peak
+            L = self.priors['L'].peak
+            self.nu = 10**light_profiles.log10_plummer3d(self.r, L, r_star)
+            self.Sigma = 10**light_profiles.log10_plummer2d(self.R, L, r_star)
+
+        # calculate the RMS
+        is_v_mean_delta = isinstance(
+            self.priors['v_mean'], (float, bilby.core.prior.DeltaFunction))
+        if is_v_mean_delta:
+            logger.info('Preset RMS')
+            v_mean = self.priors['v_mean'].peak
+            self.v_rms = (self.v - v_mean)**2
+
+        # calculate anisotropy parameters
+        is_r_a_delta = isinstance(
+            self.priors.get('r_a'), (float, bilby.core.prior.DeltaFunction))
+        if is_r_a_delta:
+            r_a = self.priors['r_a'].peak
+            beta = calc_beta(self.r, r_a)
+            g = calc_g(self.r, beta)
 
     def log_likelihood(self):
         ''' The log likelihood given a set of DM parameters.
@@ -190,18 +230,40 @@ class JeansModel(model.Model):
         r_star = self.parameters['r_star']
         v_mean = self.parameters['v_mean']
 
+        if self.parameters.get('r_a_fact') is not None:
+            r_a_fact = self.parameters['r_a_fact']
+            r_a = r_star * r_a_fact
+        else:
+            r_a = self.parameters['r_a']
+
         # calculate the 3D and 2D light profile
-        nu = 10**light_profiles.log10_plummer3d(self.r, L, r_star)
-        Sigma = 10**light_profiles.log10_plummer2d(self.R, L, r_star)
+        if self.nu is None and self.Sigma is None:
+            nu = 10**light_profiles.log10_plummer3d(self.r, L, r_star)
+            Sigma = 10**light_profiles.log10_plummer2d(self.R, L, r_star)
+        else:
+            nu = self.nu
+            Sigma = self.Sigma
+
+        # calculate anisotropy parameters
+        if self.beta is not None:
+            beta = self.beta
+            g = self.g
+        else:
+            beta = calc_beta(self.r, r_a)
+            g = calc_g(self.r, beta)
 
         # calculate the projected 2d velocity dispersion
-        sigma2_nu = calc_sigma2_nu(self.r, nu, r_dm, gamma, rho_0, self.g)
-        sigma2p_Sigma = calc_sigma2p_Sigma(self.R, self.r, sigma2_nu, self.beta)
+        sigma2_nu = calc_sigma2_nu(self.r, nu, r_dm, gamma, rho_0, g)
+        sigma2p_Sigma = calc_sigma2p_Sigma(self.R, self.r, sigma2_nu, beta)
         sigma2p = sigma2p_Sigma / Sigma * kpc_to_km**2
 
         # calculate the log likelihood
+        if self.v_rms is None:
+            v_rms = (self.v - v_mean)**2
+        else:
+            v_rms = self.v_rms
         var = sigma2p + self.v_var
-        logL = -0.5 * (self.v - v_mean)**2 / var
+        logL = -0.5 * v_rms / var
         logL = logL - 0.5 * np.log(2 * np.pi * var)
         logL = np.sum(logL)
 
