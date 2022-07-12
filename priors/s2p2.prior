@@ -1,0 +1,4 @@
+r_dm = Uniform(0.1, 5, "r_dm")
+gamma = Uniform(-1, 2, "gamma")
+rho_0 = LogUniform(1e5, 1e8, "rho_0")
+
