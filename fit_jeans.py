@@ -77,6 +77,12 @@ def parse_cmd():
     parser.add_argument(
         '--npoints', required=False, default=100, type=int,
         help="Number of live points for dynesty")
+    parser.add_argument(
+        '--npool', required=False, default=1, type=int,
+        help='Number of processes')
+    parser.add_argument(
+        '--dlogz', required=False, default=0.1, type=float,
+        help='Stopping criteria')
 
     return parser.parse_args()
 
@@ -106,7 +112,8 @@ if __name__ == '__main__':
     logger.info(f'fit light profile using Plummer 2D model')
     plummer_model = light_profiles.PlummerModel(R)
     plummer_model.run_sampler(
-        sampler="dynesty", npoints=FLAGS.npoints, sample='auto',
+        sampler="dynesty", npoints=FLAGS.npoints,
+        sample='auto', npool=FLAGS.npool, dlogz=FLAGS.dlogz,
         label="plummer", outdir=FLAGS.outdir, resume=(not FLAGS.overwrite),
     )
 
@@ -149,8 +156,9 @@ if __name__ == '__main__':
         fit_v_mean=FLAGS.fit_v_mean
     )
     jeans_model.run_sampler(
-        sampler="dynesty", npoints=FLAGS.npoints, sample='auto',
-        label="jeans", outdir=FLAGS.outdir, resume=(not FLAGS.overwrite)
+        sampler="dynesty", npoints=FLAGS.npoints,
+        sample='auto', npool=FLAGS.npool, dlogz=FLAGS.dlogz,
+        label="jeans", outdir=FLAGS.outdir,resume=(not FLAGS.overwrite)
     )
 
     # print out a summary statement
