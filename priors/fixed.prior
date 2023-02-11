@@ -1,4 +1,0 @@
-r_dm = DeltaFunction(1, "r_dm")
-gamma = Uniform(-1, 2, "gamma")
-rho_0 = DeltaFunction(6.4e7, "rho_0")
-
