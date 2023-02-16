@@ -1,22 +1,23 @@
 #!/usr/bin/env python
 
 import os
-import h5py
 import sys
+import h5py
 import argparse
 import logging
 import warnings
 import shutil
-
-import dynesty
 import numpy as np
 import bilby
+from scipy.spatial.transform import Rotation
 
 from dsphs_jeans import light_profiles, dm_profiles
 
 warnings.filterwarnings("ignore")
 
 FLAGS = None
+DEFAULT_INPUT_DIR = "/ocean/projects/ast200012p/tvnguyen/FIRE/particles"
+DEFAULT_OUTPUT_DIR = "/ocean/projects/ast200012p/tvnguyen/FIRE/jeans_posteriors"
 
 # function to set logger
 def set_logger():
@@ -33,17 +34,29 @@ def set_logger():
 # parse command line argument
 def parse_cmd():
     ''' Parse cmd arguments '''
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     # input output args
     parser.add_argument(
-        '-i', '--input', required=True, help='Path to input coordinate table')
+        '-i', '--input', required=True,
+        help='Path to input particle data in HDF5 format')
     parser.add_argument(
-        '-o', '--outdir',
-        required=True, help='Path to output directory')
+        '-o', '--outdir', required=True, help='Path to output directory')
     parser.add_argument(
         '--overwrite', action='store_true', required=False,
         help='Enable to overwrite previous run')
+
+    # FIRE args
+    parser.add_argument(
+        '-N', '--num-parts', required=False, type=int,
+        help='Maximum number of particles to consider')
+    parser.add_argument(
+        '-p', '--projection', required=False, type=str.lower, default='random',
+        help='Projection to consider. Default to a random projection.')
+    parser.add_argument(
+        '-s', '--species', type=str, default='star', required=False,
+        help='Species of particle to sample kinematics')
 
     # likelihood args
     parser.add_argument(
@@ -87,11 +100,63 @@ def parse_cmd():
 
     return parser.parse_args()
 
+# Read FIRE input
+def read_fire(
+    path, species='star', num_parts=None, num_runs=1,
+    projection="random"):
+    """ Read FIRE galaxy from path"""
 
-if __name__ == '__main__':
-    ''' Run Jeans analysis '''
-    FLAGS = parse_cmd()
+    # read position and velocity of FIRE galaxy from path
+    if not os.path.exists(path):
+        path = os.path.join(DEFAULT_INPUT_DIR, path + '.hdf5')
+    with h5py.File(path, 'r') as f:
+        position = f[f'{species}/position'][:]
+        velocity = f[f'{species}/velocity'][:]
+
+    features = []
+    fake_labels = np.zeros((num_runs, 5))   # fake labels
+    for i in range(num_runs):
+        # randomly select num_parts stars
+        if num_parts is None:
+            num_parts = len(position)
+        else:
+            select = np.random.permutation(len(position))[:num_parts]
+            position = position[select]
+            velocity = velocity[select]
+
+        # project coordinates and calculate the projected radius
+        if projection == "random":
+            rot = Rotation.random().as_matrix()
+            position = position @ rot.T
+            velocity = velocity @ rot.T
+            X = position[:, 0]
+            Y = position[:, 1]
+            v = velocity[:, 2]
+        elif projection in ("xy", "yx"):
+            X = position[:, 0]
+            Y = position[:, 1]
+            v = velocity[:, 2]
+        elif projection in ("yz", "zy"):
+            X = position[:, 1]
+            Y = position[:, 2]
+            v = velocity[:, 0]
+        elif projection in ("zx", "xz"):
+            X = position[:, 2]
+            Y = position[:, 0]
+            v = velocity[:, 1]
+        else:
+            raise ValueError(f"invalid projection {projection}")
+        features.append(np.array([X, Y, v]).T)
+    features = np.stack(features)
+
+    return features, fake_labels
+
+
+def main(FLAGS):
+    """ Run Jeans analysis on FIRE galaxies """
     logger = set_logger()
+    if not os.path.isabs(FLAGS.outdir):
+        FLAGS.outdir = os.path.join(DEFAULT_OUTPUT_DIR, FLAGS.outdir)
 
     if (FLAGS.overwrite) and os.path.exists(FLAGS.outdir):
         logger.info('Overwrite existing directory')
@@ -102,11 +167,28 @@ if __name__ == '__main__':
     os.makedirs(FLAGS.outdir, exist_ok=True)
 
     # read in projected coordinates
-    logger.info(f'read coordinates from {FLAGS.input}')
-    try:
-        X, Y, _, _, _, v = np.genfromtxt(FLAGS.input, unpack=True)
-    except:
-        X, Y, v = np.genfromtxt(FLAGS.input, unpack=True)
+    cache_input = os.path.join(FLAGS.outdir, "cache.hdf5")
+    if os.path.exists(cache_input):
+        logger.info(f'found cache. reading from {cache_input}')
+        with h5py.File(cache_input, 'r') as f:
+            features = f['data/features'][:]
+            fake_labels = f['data/labels'][:]
+    else:
+        logger.info(f'read coordinates from {FLAGS.input}')
+        features, fake_labels = read_fire(
+            FLAGS.input, species=FLAGS.species, num_parts=FLAGS.num_parts, num_runs=1,
+            projection=FLAGS.projection)
+        # write cache
+        with h5py.File(cache_input, 'w') as f:
+            f.attrs.update({
+                'num_runs': 1,
+                'num_parts': FLAGS.num_parts,
+                'projection': FLAGS.projection
+            })
+            gr = f.create_group('data')
+            gr.create_dataset('features', data=features)
+            gr.create_dataset('labels', data=fake_labels)
+    X, Y, v = features[0].T
     R = np.sqrt(X**2 + Y**2)
 
     # fit light profile with the Plummer model
@@ -171,3 +253,7 @@ if __name__ == '__main__':
         hi = hi - med
         logger.info(f'{key}: {med} + {hi} - {lo}')
 
+
+if __name__ == "__main__":
+    FLAGS = parse_cmd()
+    main(FLAGS)
