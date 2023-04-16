@@ -1,1 +1,1 @@
-Package is being migrated to https://github.com/trivnguyen/JeansGNN
+Package has been migrated to https://github.com/trivnguyen/JeansGNN
